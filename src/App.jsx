@@ -49,6 +49,7 @@ export default function App() {
   const [profiles, setProfiles] = useState([]);
 
   const [form, setForm] = useState(emptyForm);
+  const [customModule, setCustomModule] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -143,6 +144,7 @@ export default function App() {
   // ---- entry form ----
   function openNewEntry() {
     setForm(emptyForm);
+    setCustomModule(false);
     setEditingId(null);
     setShowForm(true);
   }
@@ -153,6 +155,7 @@ export default function App() {
       bod: entry.bod || "", eod: entry.eod || "", hrs: entry.hrs ?? "",
       task: entry.task, result: [...(entry.result || [])], comments: entry.comments || "",
     });
+    setCustomModule(!MODULES.includes(entry.module));
     setEditingId(entry.id);
     setShowForm(true);
   }
@@ -411,8 +414,33 @@ export default function App() {
                 </div>
                 <div className="field">
                   <label className="label">SAP module</label>
-                  <input className="input" list="modules-list" value={form.module} onChange={e => setForm(f => ({ ...f, module: e.target.value }))} required />
-                  <datalist id="modules-list">{MODULES.map(m => <option key={m} value={m} />)}</datalist>
+                  <select
+                    className="select"
+                    value={customModule ? "Other" : form.module}
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (val === "Other") {
+                        setCustomModule(true);
+                        setForm(f => ({ ...f, module: "" }));
+                      } else {
+                        setCustomModule(false);
+                        setForm(f => ({ ...f, module: val }));
+                      }
+                    }}
+                  >
+                    {MODULES.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                  {customModule && (
+                    <input
+                      className="input"
+                      style={{ marginTop: 8 }}
+                      placeholder="Enter module name"
+                      value={form.module}
+                      onChange={e => setForm(f => ({ ...f, module: e.target.value }))}
+                      required
+                      autoFocus
+                    />
+                  )}
                 </div>
                 <div className="field">
                   <label className="label"><Clock size={11} style={{ verticalAlign: -1 }} /> Hrs (auto, editable)</label>
