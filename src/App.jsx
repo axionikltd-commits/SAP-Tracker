@@ -3,8 +3,10 @@ import { supabase } from "./supabaseClient";
 import {
   Plus, Trash2, Pencil, LogOut, Search, X, Check, Clock,
   LogIn, UserPlus, ShieldCheck, Users, ClipboardList, Send,
-  CheckCircle2, XCircle, ClipboardCheck,
+  CheckCircle2, XCircle, ClipboardCheck, BarChart3, Settings, DollarSign, Mail,
 } from "lucide-react";
+import ReportsPanel from "./ReportsPanel";
+import SettingsPanel from "./SettingsPanel";
 
 const MODULES = ["SD","MM","FI","CO","PP","QM","PM","WM","EWM","HR/HCM","ABAP","BASIS","BW/BI","Fiori/UI5","PI/PO","TM","Ariba","SuccessFactors","Other"];
 
@@ -31,6 +33,7 @@ function todayStr() {
 
 const emptyForm = {
   date: todayStr(),
+  project: "",
   expertise: "Technical",
   module: "SD",
   bod: "",
@@ -38,6 +41,7 @@ const emptyForm = {
   hrs: "",
   task: "",
   result: [],
+  billable: true,
   comments: "",
 };
 
@@ -52,21 +56,26 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [signupNotice, setSignupNotice] = useState("");
 
-  const [tab, setTab] = useState("log"); // 'log' | 'approvals' | 'team'
+  const [tab, setTab] = useState("log"); // 'log' | 'reports' | 'approvals' | 'team' | 'settings'
   const [entries, setEntries] = useState([]);
   const [profiles, setProfiles] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [holidays, setHolidays] = useState([]);
 
   const [form, setForm] = useState(emptyForm);
   const [customModule, setCustomModule] = useState(false);
+  const [customProject, setCustomProject] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [search, setSearch] = useState("");
   const [filterConsultant, setFilterConsultant] = useState("All");
+  const [filterProject, setFilterProject] = useState("All");
   const [filterExpertise, setFilterExpertise] = useState("All");
   const [filterResult, setFilterResult] = useState("All");
   const [filterStatus, setFilterStatus] = useState("All");
+  const [filterBillable, setFilterBillable] = useState("All");
 
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [rejectTarget, setRejectTarget] = useState(null); // array of ids being rejected
@@ -100,11 +109,15 @@ export default function App() {
     if (!session) return;
     loadEntries();
     loadProfiles();
+    loadProjects();
+    loadHolidays();
 
     const channel = supabase
       .channel("entries-changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "entries" }, () => loadEntries())
       .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, () => loadProfiles())
+      .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, () => loadProjects())
+      .on("postgres_changes", { event: "*", schema: "public", table: "holidays" }, () => loadHolidays())
       .subscribe();
 
     return () => supabase.removeChannel(channel);
@@ -119,6 +132,67 @@ export default function App() {
   async function loadProfiles() {
     const { data, error } = await supabase.from("profiles").select("*").order("full_name");
     if (!error) setProfiles(data || []);
+  }
+
+  async function loadProjects() {
+    const { data, error } = await supabase.from("projects").select("*").order("name");
+    if (!error) setProjects(data || []);
+  }
+
+  async function loadHolidays() {
+    const { data, error } = await supabase.from("holidays").select("*").order("date");
+    if (!error) setHolidays(data || []);
+  }
+
+  // resolves a project name to an id, creating the project if it doesn't exist yet
+  async function resolveProjectId(name) {
+    const trimmed = name.trim();
+    if (!trimmed) return { id: null, name: null };
+    const existing = projects.find(p => p.name.toLowerCase() === trimmed.toLowerCase());
+    if (existing) return { id: existing.id, name: existing.name };
+
+    const { data, error } = await supabase.from("projects").insert({ name: trimmed, created_by: session.user.id }).select().single();
+    if (error) {
+      if (error.code === "23505") {
+        const { data: found } = await supabase.from("projects").select("*").ilike("name", trimmed).single();
+        if (found) return { id: found.id, name: found.name };
+      }
+      throw error;
+    }
+    loadProjects();
+    return { id: data.id, name: data.name };
+  }
+
+  // ---- admin: projects & holidays management ----
+  async function createProject(fields) {
+    const { error } = await supabase.from("projects").insert({ ...fields, created_by: session.user.id });
+    if (error) alert(error.message);
+    else loadProjects();
+  }
+
+  async function updateProject(id, fields) {
+    const { error } = await supabase.from("projects").update(fields).eq("id", id);
+    if (error) alert(error.message);
+    else loadProjects();
+  }
+
+  async function deleteProject(id) {
+    if (!confirm("Delete this project? Entries already logged against it will keep their project name but lose the link.")) return;
+    const { error } = await supabase.from("projects").delete().eq("id", id);
+    if (error) alert("Couldn't delete: " + error.message);
+    else loadProjects();
+  }
+
+  async function addHoliday(fields) {
+    const { error } = await supabase.from("holidays").insert({ ...fields, created_by: session.user.id });
+    if (error) alert(error.message);
+    else loadHolidays();
+  }
+
+  async function deleteHoliday(id) {
+    const { error } = await supabase.from("holidays").delete().eq("id", id);
+    if (error) alert(error.message);
+    else loadHolidays();
   }
 
   // ---- auth actions ----
@@ -161,17 +235,19 @@ export default function App() {
   function openNewEntry() {
     setForm(emptyForm);
     setCustomModule(false);
+    setCustomProject(false);
     setEditingId(null);
     setShowForm(true);
   }
 
   function openEditEntry(entry) {
     setForm({
-      date: entry.date, expertise: entry.expertise, module: entry.module,
+      date: entry.date, project: entry.project_name || "", expertise: entry.expertise, module: entry.module,
       bod: entry.bod || "", eod: entry.eod || "", hrs: entry.hrs ?? "",
-      task: entry.task, result: [...(entry.result || [])], comments: entry.comments || "",
+      task: entry.task, result: [...(entry.result || [])], billable: entry.billable !== false, comments: entry.comments || "",
     });
     setCustomModule(!MODULES.includes(entry.module));
+    setCustomProject(!projects.some(p => p.name === entry.project_name));
     setEditingId(entry.id);
     setShowForm(true);
   }
@@ -187,8 +263,18 @@ export default function App() {
     e.preventDefault();
     setSaving(true);
     const hrs = form.hrs === "" ? null : parseFloat(form.hrs);
+    let projectRef;
+    try {
+      projectRef = await resolveProjectId(form.project);
+    } catch (err) {
+      alert("Couldn't save the project: " + err.message);
+      setSaving(false);
+      return;
+    }
     const payload = {
       date: form.date,
+      project_id: projectRef.id,
+      project_name: projectRef.name,
       expertise: form.expertise,
       module: form.module,
       bod: form.bod || null,
@@ -196,6 +282,7 @@ export default function App() {
       hrs,
       task: form.task,
       result: form.result,
+      billable: form.billable,
       comments: form.comments || null,
     };
 
@@ -295,15 +382,17 @@ export default function App() {
   const filtered = useMemo(() => {
     return entries
       .filter(e => filterConsultant === "All" || e.consultant_name === filterConsultant)
+      .filter(e => filterProject === "All" || e.project_name === filterProject)
       .filter(e => filterExpertise === "All" || e.expertise === filterExpertise)
       .filter(e => filterResult === "All" || (e.result || []).includes(filterResult))
       .filter(e => filterStatus === "All" || e.status === filterStatus)
+      .filter(e => filterBillable === "All" || (filterBillable === "billable" ? e.billable !== false : e.billable === false))
       .filter(e => {
         if (!search.trim()) return true;
         const s = search.toLowerCase();
-        return [e.consultant_name, e.module, e.task, e.comments].some(v => (v || "").toLowerCase().includes(s));
+        return [e.consultant_name, e.project_name, e.module, e.task, e.comments].some(v => (v || "").toLowerCase().includes(s));
       });
-  }, [entries, filterConsultant, filterExpertise, filterResult, filterStatus, search]);
+  }, [entries, filterConsultant, filterProject, filterExpertise, filterResult, filterStatus, filterBillable, search]);
 
   const totalHrs = useMemo(() => filtered.reduce((sum, e) => sum + (parseFloat(e.hrs) || 0), 0), [filtered]);
 
@@ -383,20 +472,30 @@ export default function App() {
         </div>
       </div>
 
-      {isAdmin && (
-        <div className="nav-tabs">
-          <div className={`nav-tab ${tab === "log" ? "active" : ""}`} onClick={() => setTab("log")}>
-            <ClipboardList size={13} style={{ verticalAlign: -2, marginRight: 5 }} /> Activity log
-          </div>
+      <div className="nav-tabs">
+        <div className={`nav-tab ${tab === "log" ? "active" : ""}`} onClick={() => setTab("log")}>
+          <ClipboardList size={13} style={{ verticalAlign: -2, marginRight: 5 }} /> Activity log
+        </div>
+        <div className={`nav-tab ${tab === "reports" ? "active" : ""}`} onClick={() => setTab("reports")}>
+          <BarChart3 size={13} style={{ verticalAlign: -2, marginRight: 5 }} /> Reports
+        </div>
+        {isAdmin && (
           <div className={`nav-tab ${tab === "approvals" ? "active" : ""}`} onClick={() => setTab("approvals")}>
             <ClipboardCheck size={13} style={{ verticalAlign: -2, marginRight: 5 }} /> Approvals
             {pendingEntries.length > 0 && <span className="role-pill" style={{ background: "rgba(226,185,58,.18)", color: "var(--partial)" }}>{pendingEntries.length}</span>}
           </div>
+        )}
+        {isAdmin && (
           <div className={`nav-tab ${tab === "team" ? "active" : ""}`} onClick={() => setTab("team")}>
             <Users size={13} style={{ verticalAlign: -2, marginRight: 5 }} /> Team ({profiles.length})
           </div>
-        </div>
-      )}
+        )}
+        {isAdmin && (
+          <div className={`nav-tab ${tab === "settings" ? "active" : ""}`} onClick={() => setTab("settings")}>
+            <Settings size={13} style={{ verticalAlign: -2, marginRight: 5 }} /> Settings
+          </div>
+        )}
+      </div>
 
       <div className="app-body">
         {tab === "log" ? (
@@ -416,6 +515,10 @@ export default function App() {
                 <option>All</option>
                 {consultantNames.map(n => <option key={n}>{n}</option>)}
               </select>
+              <select className="select" style={{ width: 170 }} value={filterProject} onChange={e => setFilterProject(e.target.value)}>
+                <option value="All">All projects</option>
+                {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+              </select>
               <select className="select" style={{ width: 140 }} value={filterExpertise} onChange={e => setFilterExpertise(e.target.value)}>
                 <option>All</option><option>Technical</option><option>Functional</option>
               </select>
@@ -428,6 +531,11 @@ export default function App() {
                 <option value="submitted">Pending review</option>
                 <option value="approved">Approved</option>
                 <option value="rejected">Rejected</option>
+              </select>
+              <select className="select" style={{ width: 150 }} value={filterBillable} onChange={e => setFilterBillable(e.target.value)}>
+                <option value="All">Billable + non</option>
+                <option value="billable">Billable only</option>
+                <option value="nonbillable">Non-billable only</option>
               </select>
               <button className="btn" onClick={openNewEntry}><Plus size={16} /> New entry</button>
             </div>
@@ -449,8 +557,8 @@ export default function App() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th></th><th>Sno</th><th>Date</th><th>Consultant</th><th>Expertise</th><th>Module</th>
-                      <th>BoD</th><th>EoD</th><th>Hrs</th><th>Task</th><th>Result</th><th>Status</th><th>Comments</th><th></th>
+                      <th></th><th>Sno</th><th>Date</th><th>Consultant</th><th>Project</th><th>Expertise</th><th>Module</th>
+                      <th>BoD</th><th>EoD</th><th>Hrs</th><th>Task</th><th>Result</th><th>Billable</th><th>Status</th><th>Comments</th><th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -464,6 +572,7 @@ export default function App() {
                         <td className="sno-cell mono">{filtered.length - i}</td>
                         <td className="mono">{e.date}</td>
                         <td>{e.consultant_name}</td>
+                        <td>{e.project_name || "—"}</td>
                         <td><span className={`badge ${e.expertise === "Technical" ? "badge-tech" : "badge-func"}`}>{e.expertise}</span></td>
                         <td>{e.module}</td>
                         <td className="mono">{e.bod || "—"}</td>
@@ -474,6 +583,9 @@ export default function App() {
                           {(e.result || []).map(r => (
                             <span key={r} className={`badge ${r === "Completed" ? "badge-ok" : "badge-partial"}`} style={{ marginRight: 4 }}>{r}</span>
                           ))}
+                        </td>
+                        <td>
+                          <span className={`badge ${e.billable === false ? "badge-consultant" : "badge-ok"}`}><DollarSign size={10} style={{ verticalAlign: -1 }} /> {e.billable === false ? "Non-billable" : "Billable"}</span>
                         </td>
                         <td>
                           <span className={`badge ${STATUS[e.status]?.badge || "badge-consultant"}`}>{STATUS[e.status]?.label || e.status}</span>
@@ -495,6 +607,15 @@ export default function App() {
               )}
             </div>
           </>
+        ) : tab === "reports" ? (
+          <ReportsPanel
+            entries={entries}
+            profiles={profiles}
+            projects={projects}
+            holidays={holidays}
+            isAdmin={isAdmin}
+            currentUserId={session.user.id}
+          />
         ) : tab === "approvals" ? (
           <ApprovalsPanel
             entries={entries}
@@ -507,9 +628,20 @@ export default function App() {
             onApprove={approveIds}
             onReject={openReject}
           />
-        ) : (
+        ) : tab === "team" ? (
           <TeamPanel profiles={profiles} entries={entries} currentUserId={session.user.id} onSetRole={setRole} />
-        )}
+        ) : tab === "settings" ? (
+          <SettingsPanel
+            projects={projects}
+            holidays={holidays}
+            entries={entries}
+            onCreateProject={createProject}
+            onUpdateProject={updateProject}
+            onDeleteProject={deleteProject}
+            onAddHoliday={addHoliday}
+            onDeleteHoliday={deleteHoliday}
+          />
+        ) : null}
       </div>
 
       {showForm && (
@@ -524,6 +656,39 @@ export default function App() {
                 <div className="field">
                   <label className="label">Date</label>
                   <input type="date" className="input" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} required />
+                </div>
+                <div className="field">
+                  <label className="label">Project</label>
+                  <select
+                    className="select"
+                    required
+                    value={customProject ? "Other" : form.project}
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (val === "Other") {
+                        setCustomProject(true);
+                        setForm(f => ({ ...f, project: "" }));
+                      } else {
+                        setCustomProject(false);
+                        setForm(f => ({ ...f, project: val }));
+                      }
+                    }}
+                  >
+                    <option value="" disabled>Select a project…</option>
+                    {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+                    <option value="Other">+ New project…</option>
+                  </select>
+                  {customProject && (
+                    <input
+                      className="input"
+                      style={{ marginTop: 8 }}
+                      placeholder="Enter new project name"
+                      value={form.project}
+                      onChange={e => setForm(f => ({ ...f, project: e.target.value }))}
+                      required
+                      autoFocus
+                    />
+                  )}
                 </div>
                 <div className="field">
                   <label className="label">Expertise</label>
@@ -572,6 +737,17 @@ export default function App() {
                 <div className="field">
                   <label className="label">EoD (end time)</label>
                   <input type="time" className="input" value={form.eod} onChange={e => setForm(f => ({ ...f, eod: e.target.value, hrs: calcHrs(f.bod, e.target.value) }))} />
+                </div>
+                <div className="field">
+                  <label className="label">Billable</label>
+                  <div className="result-opts">
+                    <div className={`chip ${form.billable ? "on" : ""}`} onClick={() => setForm(f => ({ ...f, billable: true }))}>
+                      {form.billable && <Check size={13} />} Billable
+                    </div>
+                    <div className={`chip ${!form.billable ? "on" : ""}`} onClick={() => setForm(f => ({ ...f, billable: false }))}>
+                      {!form.billable && <Check size={13} />} Non-billable
+                    </div>
+                  </div>
                 </div>
                 <div className="field" style={{ gridColumn: "1 / -1" }}>
                   <label className="label">Result</label>
@@ -628,9 +804,23 @@ export default function App() {
 }
 
 function ApprovalsPanel({ entries, profiles, pendingEntries, selected, onToggle, onSelectAll, onClear, onApprove, onReject }) {
+  const [sendingDigest, setSendingDigest] = useState(false);
   const approvedHrs = useMemo(() => entries.filter(e => e.status === "approved").reduce((s, e) => s + (parseFloat(e.hrs) || 0), 0), [entries]);
   const rejectedCount = useMemo(() => entries.filter(e => e.status === "rejected").length, [entries]);
   const approvedCount = useMemo(() => entries.filter(e => e.status === "approved").length, [entries]);
+
+  async function sendDigestNow() {
+    setSendingDigest(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("weekly-digest");
+      if (error) throw error;
+      if (data?.skipped) alert("Nothing to send: " + data.reason);
+      else alert(`Digest sent to ${data?.sent?.length ?? 0} admin(s).`);
+    } catch (err) {
+      alert("Couldn't send the digest — has the weekly-digest function been deployed? See README → Weekly digest emails.\n\n" + err.message);
+    }
+    setSendingDigest(false);
+  }
 
   const matrix = useMemo(() => {
     const map = {};
@@ -681,7 +871,12 @@ function ApprovalsPanel({ entries, profiles, pendingEntries, selected, onToggle,
         </div>
       </div>
 
-      <p className="section-title">Pending queue</p>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <p className="section-title" style={{ margin: 0 }}>Pending queue</p>
+        <button className="btn btn-ghost" style={{ padding: "7px 14px", fontSize: 13 }} onClick={sendDigestNow} disabled={sendingDigest}>
+          <Mail size={14} /> {sendingDigest ? "Sending…" : "Send digest now"}
+        </button>
+      </div>
 
       {selected.size > 0 && (
         <div className="bulk-bar">

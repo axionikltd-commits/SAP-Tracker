@@ -1,9 +1,12 @@
 # SAP Consultant Log
 
-A team activity tracker for SAP consultants: date, consultant, expertise (Technical/Functional),
-SAP module, BoD/EoD, hours, task, result (Completed / Partial / both), and comments — with real
-login, an admin role, a submit-for-approval workflow, and a shared live-updating log backed by
-Supabase Postgres.
+**Status: frozen requirements, ready to deploy.**
+
+A team activity tracker for SAP consultants: date, consultant, project, expertise
+(Technical/Functional), SAP module, BoD/EoD, hours, task, result (Completed / Partial / both),
+billable flag, and comments — with real login, an admin role, a submit-for-approval workflow,
+project-wise Excel/PDF reports, a holiday-aware utilization calculation, weekly digest emails,
+and a shared live-updating log backed by Supabase Postgres.
 
 - Consultants log entries as **drafts**, edit them freely, then **select and submit** them for review.
 - Once submitted, an entry is **locked** — the consultant can no longer edit or delete it.
@@ -11,6 +14,17 @@ Supabase Postgres.
   **approval matrix** summarizing every consultant's draft/pending/approved/rejected counts and
   approved hours.
 - Rejected entries unlock automatically so the consultant can fix and resubmit them.
+- Every entry belongs to a **project** — pick an existing one or type a new project name inline,
+  since the same consultant can be logging time against several projects in parallel.
+- Every entry is flagged **Billable** or **Non-billable**, rolled up separately in Reports.
+- The **Reports** tab (everyone gets their own view; admins can look at anyone) generates a
+  project-wise utilization report — weekly, monthly, for a project's full duration, or a custom
+  range — with **Excel and PDF export**, downloaded straight from the browser. Working-day counts
+  automatically exclude weekends and any dates in the holiday calendar.
+- The **Settings** tab (admin-only) manages project client/start/end dates and the holiday
+  calendar directly in the app — no more editing Supabase's table editor by hand.
+- An optional **weekly digest email** can notify admins every Monday if anything's sitting in the
+  approval queue.
 - Admins can also edit/delete any entry regardless of status, and promote/revoke other admins
   from the **Team** tab.
 - Everything syncs live across everyone's screen (Supabase Realtime).
@@ -25,7 +39,7 @@ Every entry has a `status`: **Draft → Submitted → Approved / Rejected**.
 |---|---|---|
 | **Draft** | Owner (or admin) | Owner selects it and clicks "Submit for approval" |
 | **Submitted** | Nobody except an admin | Sits in the admin's Approvals queue until reviewed |
-| **Approved** | Nobody except an admin | Final — counted in approved hours / matrix |
+| **Approved** | Nobody except an admin | Final — counted in approved hours / matrix / reports |
 | **Rejected** | Owner (or admin) | Owner edits it (auto-reverts to Draft) and resubmits |
 
 This isn't just enforced in the UI — it's backed by a Postgres trigger and row-level security
@@ -42,24 +56,132 @@ consultant sees on that row back in the Activity Log.
 
 ---
 
+## Projects
+
+Projects aren't a fixed list you have to pre-configure — pick one from the dropdown when logging
+an entry, or choose **+ New project…** to create one on the spot. This is how the same consultant
+ends up able to log time against multiple projects simultaneously: the project lives on the entry,
+not on the consultant.
+
+Admins manage each project's **client name, start date, and end date** from the **Settings** tab —
+click the pencil icon on any row to edit inline. Setting start/end dates is what enables the
+"Project duration" report period in Reports.
+
+---
+
+## Billable / non-billable
+
+Every entry has a Billable toggle (defaults to **Billable**). It's purely informational — it
+doesn't affect the approval workflow — but Reports splits approved hours into Billable vs
+Non-billable per consultant, and the Activity Log can be filtered by it, so you can see utilization
+against billable client work versus internal/bench time at a glance.
+
+---
+
+## Reports
+
+Every user has a **Reports** tab. Consultants see their own utilization; admins get a consultant
+picker to look at anyone (or everyone).
+
+**Filters:** project, consultant (admins only), and a period —
+- **Weekly** — pick any date, the report covers that Monday–Sunday
+- **Monthly** — pick a month
+- **Project duration** — uses the selected project's start/end date (set in Settings → Projects)
+- **Custom range** — any from/to dates
+
+**What it shows:**
+- A **utilization summary** per consultant: entries, approved hours, billable hours, non-billable
+  hours, distinct days worked, working days in the period, and utilization % (days worked ÷
+  working days).
+- An **entry detail** table with every matching entry, all statuses included, for context.
+
+Working days = weekdays in the period, minus any dates in the **holiday calendar** (Settings tab).
+Utilization numbers are deliberately based on **approved** entries only — drafts, pending, and
+rejected rows don't count as confirmed utilized time.
+
+**Exporting:** the **Export Excel** and **Export PDF** buttons generate the file entirely in the
+browser (via SheetJS and jsPDF) from whatever's currently filtered, and download it immediately —
+no server round-trip. Excel exports include both the summary and detail as separate sheets; PDF
+exports include both as sections in one document.
+
+---
+
+## Settings (admin)
+
+Two sections, both admin-only:
+
+- **Projects** — add a project (name, client, start/end date), or edit/delete an existing one
+  inline. Deleting a project that already has entries logged against it will fail with a clear
+  error (the database protects that link) — remove or reassign those entries first if you really
+  need to delete it.
+- **Holiday calendar** — add/remove specific dates (e.g. public holidays). Anything listed here is
+  excluded from "working days" in Reports, on top of weekends.
+
+---
+
+## Weekly digest emails (optional)
+
+If enabled, every admin gets an email each Monday listing everything currently sitting in
+"submitted" status, with a link back into the app. This is optional — the app works fully without
+it — and takes a bit more setup than the rest since it's a scheduled server-side job rather than
+something the browser can do.
+
+**What you need:** a free [Resend](https://resend.com) account (or swap in any transactional email
+API — the function is short and easy to adapt) and the [Supabase CLI](https://supabase.com/docs/guides/cli) installed locally.
+
+**Setup:**
+1. `supabase login`
+2. `supabase link --project-ref <your-project-ref>` (run from the `sap-tracker` folder)
+3. Set secrets:
+   ```bash
+   supabase secrets set RESEND_API_KEY=re_your_key_here
+   supabase secrets set DIGEST_FROM="SAP Log <log@yourdomain.com>"
+   supabase secrets set APP_URL=https://your-app.vercel.app
+   ```
+   (`DIGEST_FROM` must be a sender address verified in your Resend account.)
+4. Deploy the function:
+   ```bash
+   supabase functions deploy weekly-digest
+   ```
+5. Open [`supabase/schedule_weekly_digest.sql`](./supabase/schedule_weekly_digest.sql), fill in
+   your project ref and anon key where marked, and run it once in the SQL Editor. This enables
+   `pg_cron`/`pg_net` and schedules the function for every Monday 08:00 UTC (edit the cron
+   expression in that file to change the day/time).
+
+To test it immediately without waiting for Monday, you can invoke it manually:
+```bash
+supabase functions invoke weekly-digest
+```
+It silently does nothing (no email sent) if there's nothing pending or no admins exist yet, so
+it's safe to trigger repeatedly while testing.
+
+---
+
 ## 1. Set up Supabase (free tier is enough)
 
 **New project (first-time setup):**
 1. Go to [supabase.com](https://supabase.com) → **New project**. Save the DB password somewhere safe.
 2. Open **SQL Editor → New query**, paste the entire contents of
-   [`supabase/schema.sql`](./supabase/schema.sql), and run it. This creates the `profiles` and
-   `entries` tables (including the approval-workflow columns), the auto-profile trigger, the
-   workflow guardrail trigger, and all row-level security policies.
+   [`supabase/schema.sql`](./supabase/schema.sql), and run it. This creates every table (`profiles`,
+   `projects`, `entries`, `holidays`), all triggers, and all row-level security policies in one shot.
 3. Go to **Project Settings → API**. You'll need:
    - `Project URL` → `VITE_SUPABASE_URL`
    - `anon public` key → `VITE_SUPABASE_ANON_KEY`
 4. (Optional but recommended for an internal tool) Go to **Authentication → Providers → Email**
    and turn **off** "Confirm email" so teammates can sign up and log in immediately.
+5. (Optional) Set up weekly digest emails — see the section above.
 
-**Already had the app running before this update?** Don't re-run `schema.sql` — instead run
-[`supabase/migration_approval_workflow.sql`](./supabase/migration_approval_workflow.sql) once in
-the SQL Editor. It adds the new columns/trigger to your existing tables without touching your
-existing data (every existing entry becomes a `draft`).
+**Upgrading an existing deployment?** Run these once, in order, in the SQL Editor — skip any
+you've already applied:
+1. [`supabase/migration_approval_workflow.sql`](./supabase/migration_approval_workflow.sql) — adds
+   the draft/submitted/approved/rejected workflow.
+2. [`supabase/migration_projects_and_reports.sql`](./supabase/migration_projects_and_reports.sql) —
+   adds the `projects` table and links entries to it.
+3. [`supabase/migration_billable_and_holidays.sql`](./supabase/migration_billable_and_holidays.sql) —
+   adds the billable flag and the `holidays` table.
+
+None of these touch existing rows destructively — old entries just get sensible defaults
+(`draft` status, `billable = true`, no project until edited).
 
 ### Make yourself admin
 1. Sign up in the app with your own email — you'll come in as a regular `consultant` by default.
@@ -67,7 +189,7 @@ existing data (every existing entry becomes a `draft`).
    ```sql
    update public.profiles set role = 'admin' where email = 'you@yourcompany.com';
    ```
-3. Refresh the app — you'll now see the **Approvals** and **Team** tabs.
+3. Refresh the app — you'll now see the **Approvals**, **Team**, and **Settings** tabs.
 
 ---
 
@@ -112,7 +234,8 @@ exactly what Vercel is built for.
 4. Add the same two environment variables under **Environment**.
 5. Deploy.
 
-Either platform redeploys automatically on every push to `main`.
+Either platform redeploys automatically on every push to `main`. The weekly-digest Edge Function
+is deployed separately via the Supabase CLI (see above) — it isn't part of the Vercel/Render build.
 
 ---
 
@@ -121,10 +244,18 @@ Either platform redeploys automatically on every push to `main`.
 ```
 sap-tracker/
 ├─ supabase/
-│  ├─ schema.sql                       # run once in Supabase SQL Editor for a NEW project
-│  └─ migration_approval_workflow.sql  # run once if upgrading an EXISTING project
+│  ├─ schema.sql                            # run once in Supabase SQL Editor for a NEW project
+│  ├─ migration_approval_workflow.sql       # upgrade: draft/submit/approve/reject workflow
+│  ├─ migration_projects_and_reports.sql    # upgrade: projects table + entry linkage
+│  ├─ migration_billable_and_holidays.sql   # upgrade: billable flag + holiday calendar
+│  ├─ schedule_weekly_digest.sql            # optional: schedules the digest via pg_cron
+│  └─ functions/
+│     └─ weekly-digest/index.ts             # optional: Edge Function that sends the digest email
 ├─ src/
-│  ├─ App.jsx            # all UI + logic (activity log, approvals, team)
+│  ├─ App.jsx            # activity log, auth, entry form, nav shell
+│  ├─ ReportsPanel.jsx    # utilization report + Excel/PDF export
+│  ├─ SettingsPanel.jsx   # admin: project dates + holiday calendar
+│  ├─ reportUtils.js      # date range math, utilization calc, export builders
 │  ├─ supabaseClient.js  # Supabase client (reads env vars)
 │  ├─ main.jsx
 │  └─ index.css
@@ -134,11 +265,41 @@ sap-tracker/
 └─ .env.example
 ```
 
-## Notes / things you may want to extend
+---
+
+## How things are enforced (security notes)
+
 - Passwords and auth are fully handled by Supabase Auth (not something we roll ourselves).
-- Row-level security + a Postgres trigger enforce the whole workflow server-side, not just in
-  the UI — locked entries stay locked even against a modified frontend or direct API calls.
-- To remove someone's access entirely, delete their user from **Supabase → Authentication → Users**.
-- Natural next additions: CSV/Excel export of approved hours, weekly digest emails to admins when
-  entries are pending, a "billable/non-billable" flag, or per-consultant monthly approval reports —
-  straightforward additions to the `entries` table and Approvals tab. Just say the word.
+- Row-level security + Postgres triggers enforce the approval workflow and the admin-only role
+  changes **server-side**, not just in the UI — this holds even against a modified frontend or
+  direct API calls.
+- Only admins can insert/edit/delete projects' dates, add/remove holidays, or approve/reject
+  entries — all backed by RLS policies, not just hidden buttons.
+- To remove someone's access entirely, delete their user from **Supabase → Authentication → Users**
+  (deleting only their `profiles` row is not enough — see the note below).
+- The `xlsx` (SheetJS) package has a couple of known advisories with no npm-side fix yet
+  (prototype pollution / ReDoS in its *parsing* code path). This app only ever **writes** exports
+  from data already in the database — it never parses user-uploaded spreadsheets — so the
+  practical exposure is low, but worth knowing if you later add spreadsheet *import*.
+
+## Common gotchas
+
+- **"User already registered" when signing someone up again after removing them**: deleting a row
+  from `public.profiles` in the Table Editor does *not* delete the underlying login. Delete the
+  user from **Authentication → Users** instead; the profile is recreated automatically next time
+  they sign up (or was never really gone).
+- **A role update from the SQL Editor "succeeds" but doesn't stick**: this was a bug in an earlier
+  version's trigger (already fixed in `schema.sql`) — the trigger blocked role changes whenever
+  `auth.uid()` was `NULL`, which is always true for direct SQL Editor queries. If you're running
+  on that older schema, re-run the fixed `create or replace function public.prevent_role_escalation()`
+  block near the top of `schema.sql`.
+- **Vercel build fails with an ERESOLVE/vite version conflict**: make sure `package.json` and
+  `package-lock.json` both match what's in this zip — `vite` is deliberately pinned to `5.4.11` to
+  stay compatible with `@vitejs/plugin-react`.
+
+## Possible future ideas (not built, not required)
+
+Everything from the original "extend" list is now implemented. If you want to keep going later:
+Slack/Teams notifications instead of (or alongside) email, CSV import for bulk-loading historical
+entries, per-region holiday calendars if the team spans countries, SSO/SAML login, or a mobile-
+friendly quick-entry view. None of these are needed to deploy today.

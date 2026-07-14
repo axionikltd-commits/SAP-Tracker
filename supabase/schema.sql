@@ -50,7 +50,9 @@ security definer
 set search_path = public
 as $$
 begin
-  if new.role is distinct from old.role and not public.is_admin(auth.uid()) then
+  if auth.uid() is not null
+     and new.role is distinct from old.role
+     and not public.is_admin(auth.uid()) then
     new.role := old.role;
   end if;
   return new;
@@ -86,12 +88,46 @@ create trigger trg_handle_new_user
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- 2. ENTRIES ------------------------------------------------------
+-- 2. PROJECTS -----------------------------------------------------
+create table if not exists public.projects (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  client_name text,
+  start_date date,
+  end_date date,
+  created_by uuid references public.profiles(id),
+  created_at timestamptz not null default now()
+);
+
+alter table public.projects enable row level security;
+
+-- everyone can see the project list (needed for the entry form + filters)
+create policy "projects_select_all"
+  on public.projects for select
+  using (auth.role() = 'authenticated');
+
+-- any signed-in user can add a new project on the fly while logging time
+create policy "projects_insert_authenticated"
+  on public.projects for insert
+  with check (auth.role() = 'authenticated');
+
+-- only an admin can edit or remove a project (dates, name, client)
+create policy "projects_update_admin"
+  on public.projects for update
+  using (public.is_admin(auth.uid()));
+
+create policy "projects_delete_admin"
+  on public.projects for delete
+  using (public.is_admin(auth.uid()));
+
+-- 3. ENTRIES ------------------------------------------------------
 create table if not exists public.entries (
   id uuid primary key default gen_random_uuid(),
   date date not null,
   consultant_id uuid not null references public.profiles(id) on delete cascade,
   consultant_name text not null,
+  project_id uuid references public.projects(id),
+  project_name text,
   expertise text not null check (expertise in ('Technical','Functional')),
   module text not null,
   bod time,
@@ -100,6 +136,7 @@ create table if not exists public.entries (
   task text not null,
   result text[] not null default '{}',
   comments text,
+  billable boolean not null default true,
   status text not null default 'draft' check (status in ('draft','submitted','approved','rejected')),
   submitted_at timestamptz,
   reviewed_by uuid references public.profiles(id),
@@ -200,8 +237,35 @@ create index if not exists entries_status_idx on public.entries(status);
 
 create index if not exists entries_date_idx on public.entries(date);
 create index if not exists entries_consultant_idx on public.entries(consultant_id);
+create index if not exists entries_project_idx on public.entries(project_id);
+
+-- 4. HOLIDAYS -------------------------------------------------------
+-- Public holidays excluded from "working days" counts in Reports.
+create table if not exists public.holidays (
+  id uuid primary key default gen_random_uuid(),
+  date date not null unique,
+  name text not null,
+  created_by uuid references public.profiles(id),
+  created_at timestamptz not null default now()
+);
+
+alter table public.holidays enable row level security;
+
+create policy "holidays_select_all"
+  on public.holidays for select
+  using (auth.role() = 'authenticated');
+
+create policy "holidays_insert_admin"
+  on public.holidays for insert
+  with check (public.is_admin(auth.uid()));
+
+create policy "holidays_delete_admin"
+  on public.holidays for delete
+  using (public.is_admin(auth.uid()));
+
+create index if not exists holidays_date_idx on public.holidays(date);
 
 -- ============================================================
--- 3. MAKE YOURSELF ADMIN (run this AFTER you sign up in the app)
+-- 5. MAKE YOURSELF ADMIN (run this AFTER you sign up in the app)
 -- ============================================================
 -- update public.profiles set role = 'admin' where email = 'you@yourcompany.com';
