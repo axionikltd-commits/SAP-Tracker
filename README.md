@@ -56,25 +56,33 @@ consultant sees on that row back in the Activity Log.
 
 ---
 
-## Projects
+## Projects & assignments
 
-Projects aren't a fixed list you have to pre-configure — pick one from the dropdown when logging
-an entry, or choose **+ New project…** to create one on the spot. This is how the same consultant
-ends up able to log time against multiple projects simultaneously: the project lives on the entry,
-not on the consultant.
+Projects are admin-managed, not created ad hoc from the entry form. In **Settings → Projects**,
+an admin creates each project (name, client, start/end date, billable flag) and then clicks the
+**people icon** on that row to pick which consultants can log time against it.
 
-Admins manage each project's **client name, start date, and end date** from the **Settings** tab —
-click the pencil icon on any row to edit inline. Setting start/end dates is what enables the
-"Project duration" report period in Reports.
+A consultant's **Add Entry** project dropdown only ever shows projects they've been assigned to —
+this is enforced by row-level security, not just hidden in the UI, so it can't be bypassed by
+calling the API directly. Admins aren't restricted by assignments and can log against any project.
+This is how the same consultant ends up able to work multiple projects simultaneously: they just
+need to be assigned to more than one.
+
+If a consultant has no projects assigned yet, Add Entry tells them so and points them to ask
+their admin, instead of silently failing.
+
+Setting a project's start/end dates is also what enables the "Project duration" report period in
+Reports.
 
 ---
 
 ## Billable / non-billable
 
-Every entry has a Billable toggle (defaults to **Billable**). It's purely informational — it
-doesn't affect the approval workflow — but Reports splits approved hours into Billable vs
-Non-billable per consultant, and the Activity Log can be filtered by it, so you can see utilization
-against billable client work versus internal/bench time at a glance.
+This is set **once per project** (in Settings → Projects), not per entry — a project is either a
+billable client engagement or it isn't, and every entry logged against it inherits that
+automatically. Reports splits approved hours into Billable vs Non-billable per consultant, and the
+Activity Log can be filtered by it, so you can see utilization against billable client work versus
+internal/bench time at a glance.
 
 ---
 
@@ -110,10 +118,10 @@ exports include both as sections in one document.
 
 Two sections, both admin-only:
 
-- **Projects** — add a project (name, client, start/end date), or edit/delete an existing one
-  inline. Deleting a project that already has entries logged against it will fail with a clear
-  error (the database protects that link) — remove or reassign those entries first if you really
-  need to delete it.
+- **Projects** — add a project (name, client, start/end date, billable flag), edit any of that
+  inline, or click the people icon to assign/unassign consultants. Deleting a project that already
+  has entries logged against it will fail with a clear error (the database protects that link) —
+  remove or reassign those entries first if you really need to delete it.
 - **Holiday calendar** — add/remove specific dates (e.g. public holidays). Anything listed here is
   excluded from "working days" in Reports, on top of weekends.
 
@@ -178,7 +186,12 @@ you've already applied:
 2. [`supabase/migration_projects_and_reports.sql`](./supabase/migration_projects_and_reports.sql) —
    adds the `projects` table and links entries to it.
 3. [`supabase/migration_billable_and_holidays.sql`](./supabase/migration_billable_and_holidays.sql) —
-   adds the billable flag and the `holidays` table.
+   adds the (now-superseded, see next) per-entry billable flag and the `holidays` table.
+4. [`supabase/migration_project_billable_and_assignments.sql`](./supabase/migration_project_billable_and_assignments.sql) —
+   moves Billable to the project level, restricts project creation to admins, and adds the
+   `project_assignments` table. As a one-time convenience it also assigns every existing consultant
+   to every existing project, so nobody suddenly loses access to something they were already
+   logging time against — trim those down afterward in Settings → Projects.
 
 None of these touch existing rows destructively — old entries just get sensible defaults
 (`draft` status, `billable = true`, no project until edited).
@@ -248,6 +261,7 @@ sap-tracker/
 │  ├─ migration_approval_workflow.sql       # upgrade: draft/submit/approve/reject workflow
 │  ├─ migration_projects_and_reports.sql    # upgrade: projects table + entry linkage
 │  ├─ migration_billable_and_holidays.sql   # upgrade: billable flag + holiday calendar
+│  ├─ migration_project_billable_and_assignments.sql  # upgrade: billable→project, assignments
 │  ├─ schedule_weekly_digest.sql            # optional: schedules the digest via pg_cron
 │  └─ functions/
 │     └─ weekly-digest/index.ts             # optional: Edge Function that sends the digest email
@@ -296,6 +310,15 @@ sap-tracker/
 - **Vercel build fails with an ERESOLVE/vite version conflict**: make sure `package.json` and
   `package-lock.json` both match what's in this zip — `vite` is deliberately pinned to `5.4.11` to
   stay compatible with `@vitejs/plugin-react`.
+- **"Export failed: i.autoTable is not a function"**: fixed — this happened because
+  `jspdf-autotable`'s plugin patching doesn't reliably attach to `jsPDF` when both are loaded via
+  a dynamic/code-split `import()`, which is what the Reports tab does to keep them out of the main
+  bundle. `reportUtils.js` now calls `jspdf-autotable`'s functional API (`autoTable(doc, options)`)
+  instead of the patched `doc.autoTable(options)`, which works reliably under code splitting.
+- **Login page shows a previously-used email pre-filled**: that's the browser's own saved-credential
+  autofill (Chrome especially), not the app defaulting anything — the login/signup fields now carry
+  a randomized `name` attribute and `autoComplete="off"` specifically to stop browsers from
+  recognizing and autofilling them.
 
 ## Possible future ideas (not built, not required)
 

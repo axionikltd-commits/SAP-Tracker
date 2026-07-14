@@ -41,7 +41,6 @@ const emptyForm = {
   hrs: "",
   task: "",
   result: [],
-  billable: true,
   comments: "",
 };
 
@@ -49,6 +48,7 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [autofillGuard] = useState(() => Math.random().toString(36).slice(2));
 
   const [authMode, setAuthMode] = useState("login");
   const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
@@ -61,10 +61,10 @@ export default function App() {
   const [profiles, setProfiles] = useState([]);
   const [projects, setProjects] = useState([]);
   const [holidays, setHolidays] = useState([]);
+  const [assignments, setAssignments] = useState([]);
 
   const [form, setForm] = useState(emptyForm);
   const [customModule, setCustomModule] = useState(false);
-  const [customProject, setCustomProject] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -111,6 +111,7 @@ export default function App() {
     loadProfiles();
     loadProjects();
     loadHolidays();
+    loadAssignments();
 
     const channel = supabase
       .channel("entries-changes")
@@ -118,6 +119,7 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, () => loadProfiles())
       .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, () => loadProjects())
       .on("postgres_changes", { event: "*", schema: "public", table: "holidays" }, () => loadHolidays())
+      .on("postgres_changes", { event: "*", schema: "public", table: "project_assignments" }, () => loadAssignments())
       .subscribe();
 
     return () => supabase.removeChannel(channel);
@@ -144,23 +146,22 @@ export default function App() {
     if (!error) setHolidays(data || []);
   }
 
-  // resolves a project name to an id, creating the project if it doesn't exist yet
-  async function resolveProjectId(name) {
-    const trimmed = name.trim();
-    if (!trimmed) return { id: null, name: null };
-    const existing = projects.find(p => p.name.toLowerCase() === trimmed.toLowerCase());
-    if (existing) return { id: existing.id, name: existing.name };
+  async function loadAssignments() {
+    const { data, error } = await supabase.from("project_assignments").select("*");
+    if (!error) setAssignments(data || []);
+  }
 
-    const { data, error } = await supabase.from("projects").insert({ name: trimmed, created_by: session.user.id }).select().single();
-    if (error) {
-      if (error.code === "23505") {
-        const { data: found } = await supabase.from("projects").select("*").ilike("name", trimmed).single();
-        if (found) return { id: found.id, name: found.name };
-      }
-      throw error;
-    }
-    loadProjects();
-    return { id: data.id, name: data.name };
+  // ---- admin: manage which consultants can log against which project ----
+  async function assignConsultant(projectId, consultantId) {
+    const { error } = await supabase.from("project_assignments").insert({ project_id: projectId, consultant_id: consultantId, created_by: session.user.id });
+    if (error) alert(error.message);
+    else loadAssignments();
+  }
+
+  async function unassignConsultant(projectId, consultantId) {
+    const { error } = await supabase.from("project_assignments").delete().eq("project_id", projectId).eq("consultant_id", consultantId);
+    if (error) alert(error.message);
+    else loadAssignments();
   }
 
   // ---- admin: projects & holidays management ----
@@ -235,19 +236,17 @@ export default function App() {
   function openNewEntry() {
     setForm(emptyForm);
     setCustomModule(false);
-    setCustomProject(false);
     setEditingId(null);
     setShowForm(true);
   }
 
   function openEditEntry(entry) {
     setForm({
-      date: entry.date, project: entry.project_name || "", expertise: entry.expertise, module: entry.module,
+      date: entry.date, project: entry.project_id || "", expertise: entry.expertise, module: entry.module,
       bod: entry.bod || "", eod: entry.eod || "", hrs: entry.hrs ?? "",
-      task: entry.task, result: [...(entry.result || [])], billable: entry.billable !== false, comments: entry.comments || "",
+      task: entry.task, result: [...(entry.result || [])], comments: entry.comments || "",
     });
     setCustomModule(!MODULES.includes(entry.module));
-    setCustomProject(!projects.some(p => p.name === entry.project_name));
     setEditingId(entry.id);
     setShowForm(true);
   }
@@ -263,18 +262,17 @@ export default function App() {
     e.preventDefault();
     setSaving(true);
     const hrs = form.hrs === "" ? null : parseFloat(form.hrs);
-    let projectRef;
-    try {
-      projectRef = await resolveProjectId(form.project);
-    } catch (err) {
-      alert("Couldn't save the project: " + err.message);
+    const project = projects.find(p => p.id === form.project);
+    if (!project) {
+      alert("Pick a project before saving.");
       setSaving(false);
       return;
     }
     const payload = {
       date: form.date,
-      project_id: projectRef.id,
-      project_name: projectRef.name,
+      project_id: project.id,
+      project_name: project.name,
+      billable: project.billable !== false,
       expertise: form.expertise,
       module: form.module,
       bod: form.bod || null,
@@ -282,7 +280,6 @@ export default function App() {
       hrs,
       task: form.task,
       result: form.result,
-      billable: form.billable,
       comments: form.comments || null,
     };
 
@@ -401,6 +398,14 @@ export default function App() {
 
   const pendingEntries = useMemo(() => entries.filter(e => e.status === "submitted"), [entries]);
 
+  // projects the CURRENT user can pick from in Add Entry: admins see everything,
+  // consultants only see projects an admin has assigned them to
+  const myProjects = useMemo(() => {
+    if (isAdmin) return projects;
+    const assignedIds = new Set(assignments.filter(a => a.consultant_id === session?.user?.id).map(a => a.project_id));
+    return projects.filter(p => assignedIds.has(p.id));
+  }, [projects, assignments, isAdmin, session]);
+
   // ---- render ----
   if (booting) {
     return <div className="loading-wrap">Loading…</div>;
@@ -423,20 +428,20 @@ export default function App() {
             </div>
           </div>
 
-          <form onSubmit={handleAuthSubmit}>
+          <form onSubmit={handleAuthSubmit} autoComplete="off">
             {authMode === "signup" && (
               <div className="field">
                 <label className="label">Full name</label>
-                <input className="input" value={authForm.name} onChange={e => setAuthForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Priya Nair" />
+                <input className="input" name={`fullname-${autofillGuard}`} autoComplete="off" value={authForm.name} onChange={e => setAuthForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Priya Nair" />
               </div>
             )}
             <div className="field">
               <label className="label">Work email</label>
-              <input type="email" className="input" value={authForm.email} onChange={e => setAuthForm(f => ({ ...f, email: e.target.value }))} placeholder="you@company.com" />
+              <input type="email" className="input" name={`email-${autofillGuard}`} autoComplete="off" value={authForm.email} onChange={e => setAuthForm(f => ({ ...f, email: e.target.value }))} placeholder="you@company.com" />
             </div>
             <div className="field">
               <label className="label">Password</label>
-              <input type="password" className="input" value={authForm.password} onChange={e => setAuthForm(f => ({ ...f, password: e.target.value }))} placeholder="••••••••" />
+              <input type="password" className="input" name={`password-${autofillGuard}`} autoComplete="new-password" value={authForm.password} onChange={e => setAuthForm(f => ({ ...f, password: e.target.value }))} placeholder="••••••••" />
             </div>
             {authError && <div className="error-text">{authError}</div>}
             {signupNotice && <div className="hint-text">{signupNotice}</div>}
@@ -635,11 +640,15 @@ export default function App() {
             projects={projects}
             holidays={holidays}
             entries={entries}
+            profiles={profiles}
+            assignments={assignments}
             onCreateProject={createProject}
             onUpdateProject={updateProject}
             onDeleteProject={deleteProject}
             onAddHoliday={addHoliday}
             onDeleteHoliday={deleteHoliday}
+            onAssignConsultant={assignConsultant}
+            onUnassignConsultant={unassignConsultant}
           />
         ) : null}
       </div>
@@ -662,33 +671,28 @@ export default function App() {
                   <select
                     className="select"
                     required
-                    value={customProject ? "Other" : form.project}
-                    onChange={e => {
-                      const val = e.target.value;
-                      if (val === "Other") {
-                        setCustomProject(true);
-                        setForm(f => ({ ...f, project: "" }));
-                      } else {
-                        setCustomProject(false);
-                        setForm(f => ({ ...f, project: val }));
-                      }
-                    }}
+                    value={form.project}
+                    onChange={e => setForm(f => ({ ...f, project: e.target.value }))}
                   >
                     <option value="" disabled>Select a project…</option>
-                    {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
-                    <option value="Other">+ New project…</option>
+                    {myProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
-                  {customProject && (
-                    <input
-                      className="input"
-                      style={{ marginTop: 8 }}
-                      placeholder="Enter new project name"
-                      value={form.project}
-                      onChange={e => setForm(f => ({ ...f, project: e.target.value }))}
-                      required
-                      autoFocus
-                    />
+                  {myProjects.length === 0 && (
+                    <p className="hint-text" style={{ textAlign: "left", margin: "8px 0 0" }}>
+                      No projects assigned to you yet — ask your admin to assign one from Settings → Projects.
+                    </p>
                   )}
+                  {form.project && (() => {
+                    const p = projects.find(pr => pr.id === form.project);
+                    if (!p) return null;
+                    return (
+                      <p className="hint-text" style={{ textAlign: "left", margin: "8px 0 0" }}>
+                        <span className={`badge ${p.billable === false ? "badge-consultant" : "badge-ok"}`}>
+                          <DollarSign size={10} style={{ verticalAlign: -1 }} /> {p.billable === false ? "Non-billable" : "Billable"}
+                        </span>{" "}project — set once for the whole project in Settings.
+                      </p>
+                    );
+                  })()}
                 </div>
                 <div className="field">
                   <label className="label">Expertise</label>
@@ -737,17 +741,6 @@ export default function App() {
                 <div className="field">
                   <label className="label">EoD (end time)</label>
                   <input type="time" className="input" value={form.eod} onChange={e => setForm(f => ({ ...f, eod: e.target.value, hrs: calcHrs(f.bod, e.target.value) }))} />
-                </div>
-                <div className="field">
-                  <label className="label">Billable</label>
-                  <div className="result-opts">
-                    <div className={`chip ${form.billable ? "on" : ""}`} onClick={() => setForm(f => ({ ...f, billable: true }))}>
-                      {form.billable && <Check size={13} />} Billable
-                    </div>
-                    <div className={`chip ${!form.billable ? "on" : ""}`} onClick={() => setForm(f => ({ ...f, billable: false }))}>
-                      {!form.billable && <Check size={13} />} Non-billable
-                    </div>
-                  </div>
                 </div>
                 <div className="field" style={{ gridColumn: "1 / -1" }}>
                   <label className="label">Result</label>

@@ -95,6 +95,7 @@ create table if not exists public.projects (
   client_name text,
   start_date date,
   end_date date,
+  billable boolean not null default true,
   created_by uuid references public.profiles(id),
   created_at timestamptz not null default now()
 );
@@ -106,12 +107,12 @@ create policy "projects_select_all"
   on public.projects for select
   using (auth.role() = 'authenticated');
 
--- any signed-in user can add a new project on the fly while logging time
-create policy "projects_insert_authenticated"
+-- only an admin creates projects (consultants pick from what's assigned to them)
+create policy "projects_insert_admin"
   on public.projects for insert
-  with check (auth.role() = 'authenticated');
+  with check (public.is_admin(auth.uid()));
 
--- only an admin can edit or remove a project (dates, name, client)
+-- only an admin can edit or remove a project (dates, name, client, billable)
 create policy "projects_update_admin"
   on public.projects for update
   using (public.is_admin(auth.uid()));
@@ -119,6 +120,36 @@ create policy "projects_update_admin"
 create policy "projects_delete_admin"
   on public.projects for delete
   using (public.is_admin(auth.uid()));
+
+-- 2b. PROJECT ASSIGNMENTS ------------------------------------------
+-- Which consultants can log time against which project. A consultant's
+-- Add Entry project dropdown only shows projects they're assigned to;
+-- admins aren't restricted by this and see every project.
+create table if not exists public.project_assignments (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
+  consultant_id uuid not null references public.profiles(id) on delete cascade,
+  created_by uuid references public.profiles(id),
+  created_at timestamptz not null default now(),
+  unique (project_id, consultant_id)
+);
+
+alter table public.project_assignments enable row level security;
+
+create policy "assignments_select_all"
+  on public.project_assignments for select
+  using (auth.role() = 'authenticated');
+
+create policy "assignments_insert_admin"
+  on public.project_assignments for insert
+  with check (public.is_admin(auth.uid()));
+
+create policy "assignments_delete_admin"
+  on public.project_assignments for delete
+  using (public.is_admin(auth.uid()));
+
+create index if not exists assignments_project_idx on public.project_assignments(project_id);
+create index if not exists assignments_consultant_idx on public.project_assignments(consultant_id);
 
 -- 3. ENTRIES ------------------------------------------------------
 create table if not exists public.entries (

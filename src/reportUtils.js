@@ -162,7 +162,7 @@ export async function exportExcel({ summaryRows, detailRows, title, subtitle }) 
 
 export async function exportPDF({ summaryRows, detailRows, title, subtitle }) {
   const { jsPDF } = await import("jspdf");
-  await import("jspdf-autotable");
+  const { default: autoTable } = await import("jspdf-autotable");
   const doc = new jsPDF({ orientation: "landscape" });
 
   doc.setFontSize(16);
@@ -171,7 +171,7 @@ export async function exportPDF({ summaryRows, detailRows, title, subtitle }) {
   doc.setTextColor(120);
   doc.text(subtitle, 14, 23);
 
-  doc.autoTable({
+  autoTable(doc, {
     startY: 30,
     head: [["Consultant", "Entries", "Approved Hrs", "Billable", "Non-billable", "Days Worked", "Working Days", "Utilization %"]],
     body: summaryRows.map(r => [r.name, r.entries, r.approvedHrs, r.billableHrs, r.nonBillableHrs, r.daysWorked, r.workingDays, `${r.utilizationPct}%`]),
@@ -184,7 +184,7 @@ export async function exportPDF({ summaryRows, detailRows, title, subtitle }) {
   doc.setTextColor(30);
   doc.text("Entry detail", 14, afterSummaryY);
 
-  doc.autoTable({
+  autoTable(doc, {
     startY: afterSummaryY + 4,
     head: [["Date", "Consultant", "Project", "Expertise", "Module", "Hrs", "Billable", "Status", "Task", "Result"]],
     body: detailRows.map(r => [r.date, r.consultant, r.project, r.expertise, r.module, r.hrs, r.billable, r.status, r.task, r.result]),
