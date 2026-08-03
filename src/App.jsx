@@ -50,11 +50,17 @@ export default function App() {
   const [profile, setProfile] = useState(null);
   const [autofillGuard] = useState(() => Math.random().toString(36).slice(2));
 
-  const [authMode, setAuthMode] = useState("login");
+  const [authMode, setAuthMode] = useState("login"); // 'login' | 'signup' | 'reset'
   const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [signupNotice, setSignupNotice] = useState("");
+  const [resetSent, setResetSent] = useState(false);
+  const [isRecovery, setIsRecovery] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [newPassword2, setNewPassword2] = useState("");
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState("");
 
   const [tab, setTab] = useState("log"); // 'log' | 'reports' | 'approvals' | 'team' | 'settings'
   const [entries, setEntries] = useState([]);
@@ -90,8 +96,9 @@ export default function App() {
       setSession(data.session);
       setBooting(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
       setSession(sess);
+      if (event === "PASSWORD_RECOVERY") setIsRecovery(true);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -202,6 +209,19 @@ export default function App() {
     setAuthError("");
     setSignupNotice("");
     const email = authForm.email.trim();
+
+    if (authMode === "reset") {
+      if (!email) { setAuthError("Enter your email first."); return; }
+      setAuthBusy(true);
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin,
+      });
+      setAuthBusy(false);
+      if (error) { setAuthError(error.message); return; }
+      setResetSent(true);
+      return;
+    }
+
     if (!email || !authForm.password) { setAuthError("Enter your email and password."); return; }
     setAuthBusy(true);
     if (authMode === "signup") {
@@ -220,6 +240,19 @@ export default function App() {
       if (error) { setAuthError(error.message); return; }
     }
     setAuthForm({ name: "", email: "", password: "" });
+  }
+
+  async function handleSetNewPassword(e) {
+    e.preventDefault();
+    setRecoveryError("");
+    if (newPassword.length < 6) { setRecoveryError("Password must be at least 6 characters."); return; }
+    if (newPassword !== newPassword2) { setRecoveryError("Passwords don't match."); return; }
+    setRecoveryBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    setRecoveryBusy(false);
+    if (error) { setRecoveryError(error.message); return; }
+    setIsRecovery(false);
+    setNewPassword(""); setNewPassword2("");
   }
 
   async function logout() {
@@ -411,22 +444,56 @@ export default function App() {
     return <div className="loading-wrap">Loading…</div>;
   }
 
+  if (isRecovery) {
+    return (
+      <div className="auth-wrap">
+        <div className="auth-card">
+          <p className="auth-eyebrow mono">SAP · CONSULTANT LOG</p>
+          <h1 className="auth-title display">Set a new password</h1>
+          <p className="auth-sub">Choose a new password for your account.</p>
+          <form onSubmit={handleSetNewPassword} autoComplete="off">
+            <div className="field">
+              <label className="label">New password</label>
+              <input type="password" className="input" name={`newpw-${autofillGuard}`} autoComplete="new-password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="••••••••" autoFocus />
+            </div>
+            <div className="field">
+              <label className="label">Confirm new password</label>
+              <input type="password" className="input" name={`newpw2-${autofillGuard}`} autoComplete="new-password" value={newPassword2} onChange={e => setNewPassword2(e.target.value)} placeholder="••••••••" />
+            </div>
+            {recoveryError && <div className="error-text">{recoveryError}</div>}
+            <button type="submit" className="btn" style={{ width: "100%", justifyContent: "center" }} disabled={recoveryBusy}>
+              {recoveryBusy ? "Saving…" : "Update password"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   if (!session || !profile) {
     return (
       <div className="auth-wrap">
         <div className="auth-card">
           <p className="auth-eyebrow mono">SAP · CONSULTANT LOG</p>
-          <h1 className="auth-title display">{authMode === "login" ? "Welcome back" : "Create your account"}</h1>
-          <p className="auth-sub">{authMode === "login" ? "Sign in to log and review consultant activity." : "Sign up, then ask your admin to grant access."}</p>
+          <h1 className="auth-title display">
+            {authMode === "login" ? "Welcome back" : authMode === "signup" ? "Create your account" : "Reset your password"}
+          </h1>
+          <p className="auth-sub">
+            {authMode === "login" ? "Sign in to log and review consultant activity."
+              : authMode === "signup" ? "Sign up, then ask your admin to grant access."
+              : "Enter your email and we'll send you a reset link."}
+          </p>
 
-          <div className="tabs">
-            <div className={`tab ${authMode === "login" ? "active" : ""}`} onClick={() => { setAuthMode("login"); setAuthError(""); }}>
-              <LogIn size={14} /> Log in
+          {authMode !== "reset" && (
+            <div className="tabs">
+              <div className={`tab ${authMode === "login" ? "active" : ""}`} onClick={() => { setAuthMode("login"); setAuthError(""); }}>
+                <LogIn size={14} /> Log in
+              </div>
+              <div className={`tab ${authMode === "signup" ? "active" : ""}`} onClick={() => { setAuthMode("signup"); setAuthError(""); }}>
+                <UserPlus size={14} /> Sign up
+              </div>
             </div>
-            <div className={`tab ${authMode === "signup" ? "active" : ""}`} onClick={() => { setAuthMode("signup"); setAuthError(""); }}>
-              <UserPlus size={14} /> Sign up
-            </div>
-          </div>
+          )}
 
           <form onSubmit={handleAuthSubmit} autoComplete="off">
             {authMode === "signup" && (
@@ -439,15 +506,34 @@ export default function App() {
               <label className="label">Work email</label>
               <input type="email" className="input" name={`email-${autofillGuard}`} autoComplete="off" value={authForm.email} onChange={e => setAuthForm(f => ({ ...f, email: e.target.value }))} placeholder="you@company.com" />
             </div>
-            <div className="field">
-              <label className="label">Password</label>
-              <input type="password" className="input" name={`password-${autofillGuard}`} autoComplete="new-password" value={authForm.password} onChange={e => setAuthForm(f => ({ ...f, password: e.target.value }))} placeholder="••••••••" />
-            </div>
+            {authMode !== "reset" && (
+              <div className="field">
+                <label className="label">Password</label>
+                <input type="password" className="input" name={`password-${autofillGuard}`} autoComplete="new-password" value={authForm.password} onChange={e => setAuthForm(f => ({ ...f, password: e.target.value }))} placeholder="••••••••" />
+              </div>
+            )}
+            {authMode === "login" && (
+              <div style={{ textAlign: "right", margin: "-8px 0 14px" }}>
+                <span className="hint-text" style={{ cursor: "pointer", textDecoration: "underline" }}
+                  onClick={() => { setAuthMode("reset"); setAuthError(""); setResetSent(false); }}>
+                  Forgot password?
+                </span>
+              </div>
+            )}
             {authError && <div className="error-text">{authError}</div>}
             {signupNotice && <div className="hint-text">{signupNotice}</div>}
+            {authMode === "reset" && resetSent && (
+              <p className="hint-text">Check your inbox — we've sent a link to reset your password.</p>
+            )}
             <button type="submit" className="btn" style={{ width: "100%", justifyContent: "center" }} disabled={authBusy}>
-              {authBusy ? "Please wait…" : authMode === "login" ? "Log in" : "Create account"}
+              {authBusy ? "Please wait…" : authMode === "login" ? "Log in" : authMode === "signup" ? "Create account" : "Send reset link"}
             </button>
+            {authMode === "reset" && (
+              <p className="hint-text" style={{ cursor: "pointer", textAlign: "center", marginTop: 10 }}
+                onClick={() => { setAuthMode("login"); setAuthError(""); setResetSent(false); }}>
+                ← Back to log in
+              </p>
+            )}
           </form>
           {!booting && session && !profile && (
             <p className="hint-text">Signed in — setting up your profile…</p>

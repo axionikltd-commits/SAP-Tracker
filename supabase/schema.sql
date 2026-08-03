@@ -193,10 +193,10 @@ create trigger trg_entries_updated_at
   before update on public.entries
   for each row execute function public.set_updated_at();
 
--- whole team can see every entry (shared log)
-create policy "entries_select_all"
+-- each consultant sees only their own entries; admins see everyone's
+create policy "entries_select_own_or_admin"
   on public.entries for select
-  using (auth.role() = 'authenticated');
+  using (auth.uid() = consultant_id or public.is_admin(auth.uid()));
 
 -- any signed-in user can log an entry for themself
 create policy "entries_insert_own"
@@ -232,7 +232,10 @@ declare
 begin
   admin := public.is_admin(auth.uid());
 
-  if not admin then
+  -- only apply consultant-side locking when there's a real authenticated,
+  -- non-admin caller. SQL Editor / service-role calls (auth.uid() is null)
+  -- and admins bypass these checks entirely.
+  if auth.uid() is not null and not admin then
     if old.status in ('submitted','approved') then
       raise exception 'This entry is locked and can no longer be edited.';
     end if;
@@ -248,7 +251,7 @@ begin
     if new.status = 'submitted' and old.status is distinct from new.status then
       new.submitted_at := now();
     end if;
-  else
+  elsif admin then
     if new.status in ('approved','rejected') and new.status is distinct from old.status then
       new.reviewed_by := auth.uid();
       new.reviewed_at := now();

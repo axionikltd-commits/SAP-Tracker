@@ -6,17 +6,23 @@ A team activity tracker for SAP consultants: date, consultant, project, expertis
 (Technical/Functional), SAP module, BoD/EoD, hours, task, result (Completed / Partial / both),
 billable flag, and comments — with real login, an admin role, a submit-for-approval workflow,
 project-wise Excel/PDF reports, a holiday-aware utilization calculation, weekly digest emails,
-and a shared live-updating log backed by Supabase Postgres.
+and a live-updating log backed by Supabase Postgres.
 
+- Each **consultant only sees their own entries** in the Activity Log; **admins see everyone's**.
+  This is enforced by row-level security in Postgres, not just hidden in the UI.
 - Consultants log entries as **drafts**, edit them freely, then **select and submit** them for review.
 - Once submitted, an entry is **locked** — the consultant can no longer edit or delete it.
 - Admins get an **Approvals** tab: a pending queue (approve/reject, single or bulk) and an
   **approval matrix** summarizing every consultant's draft/pending/approved/rejected counts and
   approved hours.
 - Rejected entries unlock automatically so the consultant can fix and resubmit them.
-- Every entry belongs to a **project** — pick an existing one or type a new project name inline,
-  since the same consultant can be logging time against several projects in parallel.
-- Every entry is flagged **Billable** or **Non-billable**, rolled up separately in Reports.
+- Every entry belongs to a **project**. Consultants only see projects an admin has assigned them
+  to (managed in Settings), since the same consultant can be logging time against several
+  projects in parallel but shouldn't see every project in the company.
+- **Billable / Non-billable** is a project-level attribute set once by an admin — every entry
+  under that project inherits it automatically, rolled up separately in Reports.
+- **Forgot password?** on the login screen sends a reset link by email; clicking it lets the
+  person set a new password themselves, no admin involvement needed.
 - The **Reports** tab (everyone gets their own view; admins can look at anyone) generates a
   project-wise utilization report — weekly, monthly, for a project's full duration, or a custom
   range — with **Excel and PDF export**, downloaded straight from the browser. Working-day counts
@@ -27,7 +33,7 @@ and a shared live-updating log backed by Supabase Postgres.
   approval queue.
 - Admins can also edit/delete any entry regardless of status, and promote/revoke other admins
   from the **Team** tab.
-- Everything syncs live across everyone's screen (Supabase Realtime).
+- Live updates via Supabase Realtime — respecting the same visibility rules above.
 
 ---
 
@@ -177,7 +183,11 @@ it's safe to trigger repeatedly while testing.
    - `anon public` key → `VITE_SUPABASE_ANON_KEY`
 4. (Optional but recommended for an internal tool) Go to **Authentication → Providers → Email**
    and turn **off** "Confirm email" so teammates can sign up and log in immediately.
-5. (Optional) Set up weekly digest emails — see the section above.
+5. Go to **Authentication → URL Configuration** and add your deployed URL (e.g.
+   `https://your-app.vercel.app`, plus `http://localhost:5173` for local dev) under **Redirect
+   URLs**. Required for the "Forgot password?" email link to land back on the app correctly —
+   without this step, password reset emails will send but the link won't work.
+6. (Optional) Set up weekly digest emails — see the section above.
 
 **Upgrading an existing deployment?** Run these once, in order, in the SQL Editor — skip any
 you've already applied:
@@ -192,6 +202,12 @@ you've already applied:
    `project_assignments` table. As a one-time convenience it also assigns every existing consultant
    to every existing project, so nobody suddenly loses access to something they were already
    logging time against — trim those down afterward in Settings → Projects.
+5. [`supabase/migration_own_entries_only.sql`](./supabase/migration_own_entries_only.sql) —
+   restricts the Activity Log so each consultant sees only their own entries; admins still see
+   everyone's.
+
+Forgot-password itself needs no database migration — it's built entirely on Supabase Auth's
+existing `resetPasswordForEmail` / `updateUser` methods. Just do step 5 above (Redirect URLs).
 
 None of these touch existing rows destructively — old entries just get sensible defaults
 (`draft` status, `billable = true`, no project until edited).
