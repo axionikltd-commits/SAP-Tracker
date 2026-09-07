@@ -10,6 +10,10 @@ and a live-updating log backed by Supabase Postgres.
 
 - Each **consultant only sees their own entries** in the Activity Log; **admins see everyone's**.
   This is enforced by row-level security in Postgres, not just hidden in the UI.
+- Filling out a timesheet is fast: the **copy icon** on any of your own entries pre-fills a new
+  entry with the same project/module/task/hours (just change what's different), and **"Copy last
+  day"** in the toolbar clones your entire most recent day's entries into fresh drafts for today
+  in one click.
 - Consultants log entries as **drafts**, edit them freely, then **select and submit** them for review.
 - Once submitted, an entry is **locked** — the consultant can no longer edit or delete it.
 - Admins get an **Approvals** tab: a pending queue (approve/reject, single or bulk) and an

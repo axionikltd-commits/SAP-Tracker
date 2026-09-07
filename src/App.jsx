@@ -4,6 +4,7 @@ import {
   Plus, Trash2, Pencil, LogOut, Search, X, Check, Clock,
   LogIn, UserPlus, ShieldCheck, Users, ClipboardList, Send,
   CheckCircle2, XCircle, ClipboardCheck, BarChart3, Settings, DollarSign, Mail,
+  Copy, CalendarClock,
 } from "lucide-react";
 import ReportsPanel from "./ReportsPanel";
 import SettingsPanel from "./SettingsPanel";
@@ -74,6 +75,7 @@ export default function App() {
   const [editingId, setEditingId] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [copyingDay, setCopyingDay] = useState(false);
 
   const [search, setSearch] = useState("");
   const [filterConsultant, setFilterConsultant] = useState("All");
@@ -284,6 +286,20 @@ export default function App() {
     setShowForm(true);
   }
 
+  // pre-fills the entry form from a past entry so a consultant can tweak a
+  // couple of fields (usually just the date/hours) instead of retyping the
+  // whole row. Always creates a brand-new draft — never touches the original.
+  function openDuplicateEntry(entry) {
+    setForm({
+      date: todayStr(), project: entry.project_id || "", expertise: entry.expertise, module: entry.module,
+      bod: entry.bod || "", eod: entry.eod || "", hrs: entry.hrs ?? "",
+      task: entry.task, result: [...(entry.result || [])], comments: entry.comments || "",
+    });
+    setCustomModule(!MODULES.includes(entry.module));
+    setEditingId(null);
+    setShowForm(true);
+  }
+
   function toggleResult(val) {
     setForm(f => {
       const has = f.result.includes(val);
@@ -342,6 +358,48 @@ export default function App() {
   async function deleteEntry(id) {
     if (!confirm("Delete this entry?")) return;
     const { error } = await supabase.from("entries").delete().eq("id", id);
+    if (error) alert(error.message);
+    else loadEntries();
+  }
+
+  // clones every entry the consultant logged on their most recent previous
+  // day into fresh drafts for today — the "same tasks as yesterday" shortcut.
+  async function copyFromPreviousDay() {
+    const myEntries = entries.filter(en => en.created_by === session.user.id);
+    const pastDates = Array.from(new Set(myEntries.filter(en => en.date < todayStr()).map(en => en.date))).sort().reverse();
+    if (pastDates.length === 0) {
+      alert("You don't have any previous entries to copy yet.");
+      return;
+    }
+    const lastDate = pastDates[0];
+    const toCopy = myEntries.filter(en => en.date === lastDate);
+    const ok = confirm(`Copy ${toCopy.length} ${toCopy.length === 1 ? "entry" : "entries"} from ${lastDate} to today (${todayStr()}) as new drafts you can then edit?`);
+    if (!ok) return;
+
+    setCopyingDay(true);
+    const rows = toCopy.map(en => {
+      const project = projects.find(p => p.id === en.project_id);
+      return {
+        date: todayStr(),
+        project_id: en.project_id,
+        project_name: project ? project.name : en.project_name,
+        billable: project ? project.billable !== false : en.billable,
+        expertise: en.expertise,
+        module: en.module,
+        bod: en.bod,
+        eod: en.eod,
+        hrs: en.hrs,
+        task: en.task,
+        result: en.result,
+        comments: en.comments,
+        consultant_id: session.user.id,
+        consultant_name: profile.full_name,
+        created_by: session.user.id,
+        status: "draft",
+      };
+    });
+    const { error } = await supabase.from("entries").insert(rows);
+    setCopyingDay(false);
     if (error) alert(error.message);
     else loadEntries();
   }
@@ -628,6 +686,9 @@ export default function App() {
                 <option value="billable">Billable only</option>
                 <option value="nonbillable">Non-billable only</option>
               </select>
+              <button className="btn btn-ghost" onClick={copyFromPreviousDay} disabled={copyingDay} title="Clone your most recent day's entries as drafts for today">
+                <CalendarClock size={16} /> {copyingDay ? "Copying…" : "Copy last day"}
+              </button>
               <button className="btn" onClick={openNewEntry}><Plus size={16} /> New entry</button>
             </div>
 
@@ -687,6 +748,9 @@ export default function App() {
                         <td style={{ maxWidth: 200, color: "var(--dim)" }}>{e.comments}</td>
                         <td>
                           <div className="row-actions">
+                            {e.created_by === session.user.id && (
+                              <button className="icon-btn" onClick={() => openDuplicateEntry(e)} title="Duplicate as a new entry for today"><Copy size={14} /></button>
+                            )}
                             <button className="icon-btn" onClick={() => openEditEntry(e)} disabled={!canEdit(e)} title={canEdit(e) ? "Edit" : "Locked — only drafts or rejected entries can be edited"}><Pencil size={14} /></button>
                             <button className="icon-btn" onClick={() => deleteEntry(e.id)} disabled={!canEdit(e)} title={canEdit(e) ? "Delete" : "Locked — only drafts or rejected entries can be deleted"}><Trash2 size={14} /></button>
                           </div>
