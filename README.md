@@ -15,7 +15,14 @@ and a live-updating log backed by Supabase Postgres.
   day"** in the toolbar clones your entire most recent day's entries into fresh drafts for today
   in one click.
 - Consultants log entries as **drafts**, edit them freely, then **select and submit** them for review.
+  A **select-all** checkbox in the table header grabs everything eligible in the current filtered
+  view in one click, instead of ticking every row by hand.
 - Once submitted, an entry is **locked** — the consultant can no longer edit or delete it.
+- Admins viewing the Activity Log see it **grouped by consultant** (a header row per person with
+  their entry count and its own select-all checkbox) instead of one long list interleaved by date
+  — and can **approve or reject directly from there**, not just from the Approvals tab: selecting
+  a mix of your own drafts and other people's submitted entries splits the action bar into
+  "Submit N for approval" and "Approve/Reject N" as appropriate.
 - Admins get an **Approvals** tab: a pending queue (approve/reject, single or bulk) and an
   **approval matrix** summarizing every consultant's draft/pending/approved/rejected counts and
   approved hours.

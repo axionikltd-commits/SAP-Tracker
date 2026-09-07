@@ -420,9 +420,8 @@ export default function App() {
   }
 
   async function submitSelected() {
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
-    const { error } = await supabase.from("entries").update({ status: "submitted" }).in("id", ids);
+    if (toSubmitIds.length === 0) return;
+    const { error } = await supabase.from("entries").update({ status: "submitted" }).in("id", toSubmitIds);
     if (error) alert(error.message);
     setSelectedIds(new Set());
     loadEntries();
@@ -458,6 +457,7 @@ export default function App() {
     setRejectTarget(null);
     setRejectComment("");
     setApprovalSelected(new Set());
+    setSelectedIds(new Set());
     loadEntries();
   }
 
@@ -485,7 +485,25 @@ export default function App() {
   const totalHrs = useMemo(() => filtered.reduce((sum, e) => sum + (parseFloat(e.hrs) || 0), 0), [filtered]);
 
   const canEdit = (e) => isAdmin || (e.created_by === session?.user?.id && ["draft", "rejected"].includes(e.status));
-  const canSelect = (e) => e.created_by === session?.user?.id && ["draft", "rejected"].includes(e.status);
+  // a row's checkbox appears when the current user can DO something with it in bulk:
+  // their own draft/rejected entries (to submit), or — for admins — anyone's submitted
+  // entries (to approve/reject) right from the Activity Log.
+  const canSelect = (e) => (e.created_by === session?.user?.id && ["draft", "rejected"].includes(e.status)) || (isAdmin && e.status === "submitted");
+
+  const toSubmitIds = useMemo(
+    () => Array.from(selectedIds).filter(id => {
+      const en = entries.find(e => e.id === id);
+      return en && en.created_by === session?.user?.id && ["draft", "rejected"].includes(en.status);
+    }),
+    [selectedIds, entries, session]
+  );
+  const toApproveIds = useMemo(
+    () => (isAdmin ? Array.from(selectedIds).filter(id => {
+      const en = entries.find(e => e.id === id);
+      return en && en.status === "submitted";
+    }) : []),
+    [selectedIds, entries, isAdmin]
+  );
 
   const pendingEntries = useMemo(() => entries.filter(e => e.status === "submitted"), [entries]);
 
@@ -496,6 +514,94 @@ export default function App() {
     const assignedIds = new Set(assignments.filter(a => a.consultant_id === session?.user?.id).map(a => a.project_id));
     return projects.filter(p => assignedIds.has(p.id));
   }, [projects, assignments, isAdmin, session]);
+
+  // renders one entry as a table row — shared by the flat (consultant) view
+  // and the grouped (admin) view below, so the markup lives in one place.
+  function renderEntryRow(e, i) {
+    return (
+      <tr key={e.id}>
+        <td className="check-cell">
+          {canSelect(e) && (
+            <input type="checkbox" checked={selectedIds.has(e.id)} onChange={() => toggleSelect(e.id)} />
+          )}
+        </td>
+        <td className="sno-cell mono">{filtered.length - i}</td>
+        <td className="mono">{e.date}</td>
+        <td>{e.consultant_name}</td>
+        <td>{e.project_name || "—"}</td>
+        <td><span className={`badge ${e.expertise === "Technical" ? "badge-tech" : "badge-func"}`}>{e.expertise}</span></td>
+        <td>{e.module}</td>
+        <td className="mono">{e.bod || "—"}</td>
+        <td className="mono">{e.eod || "—"}</td>
+        <td className="mono">{e.hrs ?? "—"}</td>
+        <td style={{ maxWidth: 220 }}>{e.task}</td>
+        <td>
+          {(e.result || []).map(r => (
+            <span key={r} className={`badge ${r === "Completed" ? "badge-ok" : "badge-partial"}`} style={{ marginRight: 4 }}>{r}</span>
+          ))}
+        </td>
+        <td>
+          <span className={`badge ${e.billable === false ? "badge-consultant" : "badge-ok"}`}><DollarSign size={10} style={{ verticalAlign: -1 }} /> {e.billable === false ? "Non-billable" : "Billable"}</span>
+        </td>
+        <td>
+          <span className={`badge ${STATUS[e.status]?.badge || "badge-consultant"}`}>{STATUS[e.status]?.label || e.status}</span>
+          {e.status === "rejected" && e.review_comment && (
+            <div className="review-note">"{e.review_comment}"</div>
+          )}
+        </td>
+        <td style={{ maxWidth: 200, color: "var(--dim)" }}>{e.comments}</td>
+        <td>
+          <div className="row-actions">
+            {e.created_by === session.user.id && (
+              <button className="icon-btn" onClick={() => openDuplicateEntry(e)} title="Duplicate as a new entry for today"><Copy size={14} /></button>
+            )}
+            <button className="icon-btn" onClick={() => openEditEntry(e)} disabled={!canEdit(e)} title={canEdit(e) ? "Edit" : "Locked — only drafts or rejected entries can be edited"}><Pencil size={14} /></button>
+            <button className="icon-btn" onClick={() => deleteEntry(e.id)} disabled={!canEdit(e)} title={canEdit(e) ? "Delete" : "Locked — only drafts or rejected entries can be deleted"}><Trash2 size={14} /></button>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
+  // admin view: cluster rows by consultant with a header row per person
+  // (name, entry count, and a "select all for this person" checkbox) —
+  // a flat mixed-consultant table gets confusing once more than one or
+  // two people are logging time.
+  function renderGroupedRows() {
+    const order = [];
+    const groups = {};
+    filtered.forEach((e, i) => {
+      const key = e.consultant_name || "Unknown";
+      if (!groups[key]) { groups[key] = []; order.push(key); }
+      groups[key].push({ e, i });
+    });
+
+    const out = [];
+    order.forEach(name => {
+      const rows = groups[name];
+      const eligibleIds = rows.filter(({ e }) => canSelect(e)).map(({ e }) => e.id);
+      const allChecked = eligibleIds.length > 0 && eligibleIds.every(id => selectedIds.has(id));
+      out.push(
+        <tr key={`group-${name}`} className="group-header-row">
+          <td className="check-cell">
+            {eligibleIds.length > 0 && (
+              <input type="checkbox" checked={allChecked} title={`Select all for ${name}`}
+                onChange={() => setSelectedIds(prev => {
+                  const next = new Set(prev);
+                  eligibleIds.forEach(id => allChecked ? next.delete(id) : next.add(id));
+                  return next;
+                })} />
+            )}
+          </td>
+          <td colSpan={15} className="group-header-cell">
+            {name} <span className="group-count">· {rows.length} {rows.length === 1 ? "entry" : "entries"}</span>
+          </td>
+        </tr>
+      );
+      rows.forEach(({ e, i }) => out.push(renderEntryRow(e, i)));
+    });
+    return out;
+  }
 
   // ---- render ----
   if (booting) {
@@ -695,9 +801,21 @@ export default function App() {
             {selectedIds.size > 0 && (
               <div className="bulk-bar">
                 <strong>{selectedIds.size}</strong> selected
-                <button className="btn" style={{ padding: "7px 14px", fontSize: 13 }} onClick={submitSelected}>
-                  <Send size={14} /> Submit for approval
-                </button>
+                {toSubmitIds.length > 0 && (
+                  <button className="btn" style={{ padding: "7px 14px", fontSize: 13 }} onClick={submitSelected}>
+                    <Send size={14} /> Submit {toSubmitIds.length} for approval
+                  </button>
+                )}
+                {toApproveIds.length > 0 && (
+                  <>
+                    <button className="btn" style={{ padding: "7px 14px", fontSize: 13 }} onClick={async () => { await approveIds(toApproveIds); setSelectedIds(new Set()); }}>
+                      <CheckCircle2 size={14} /> Approve {toApproveIds.length}
+                    </button>
+                    <button className="btn btn-danger" style={{ padding: "7px 14px", fontSize: 13 }} onClick={() => openReject(toApproveIds)}>
+                      <XCircle size={14} /> Reject {toApproveIds.length}
+                    </button>
+                  </>
+                )}
                 <button className="btn btn-ghost" style={{ padding: "7px 14px", fontSize: 13 }} onClick={() => setSelectedIds(new Set())}>Clear</button>
               </div>
             )}
@@ -709,54 +827,22 @@ export default function App() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th></th><th>Sno</th><th>Date</th><th>Consultant</th><th>Project</th><th>Expertise</th><th>Module</th>
+                      <th className="check-cell">
+                        {(() => {
+                          const eligibleIds = filtered.filter(canSelect).map(e => e.id);
+                          const allChecked = eligibleIds.length > 0 && eligibleIds.every(id => selectedIds.has(id));
+                          return eligibleIds.length > 0 ? (
+                            <input type="checkbox" checked={allChecked} title="Select all"
+                              onChange={() => setSelectedIds(allChecked ? new Set() : new Set(eligibleIds))} />
+                          ) : null;
+                        })()}
+                      </th>
+                      <th>Sno</th><th>Date</th><th>Consultant</th><th>Project</th><th>Expertise</th><th>Module</th>
                       <th>BoD</th><th>EoD</th><th>Hrs</th><th>Task</th><th>Result</th><th>Billable</th><th>Status</th><th>Comments</th><th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map((e, i) => (
-                      <tr key={e.id}>
-                        <td className="check-cell">
-                          {canSelect(e) && (
-                            <input type="checkbox" checked={selectedIds.has(e.id)} onChange={() => toggleSelect(e.id)} />
-                          )}
-                        </td>
-                        <td className="sno-cell mono">{filtered.length - i}</td>
-                        <td className="mono">{e.date}</td>
-                        <td>{e.consultant_name}</td>
-                        <td>{e.project_name || "—"}</td>
-                        <td><span className={`badge ${e.expertise === "Technical" ? "badge-tech" : "badge-func"}`}>{e.expertise}</span></td>
-                        <td>{e.module}</td>
-                        <td className="mono">{e.bod || "—"}</td>
-                        <td className="mono">{e.eod || "—"}</td>
-                        <td className="mono">{e.hrs ?? "—"}</td>
-                        <td style={{ maxWidth: 220 }}>{e.task}</td>
-                        <td>
-                          {(e.result || []).map(r => (
-                            <span key={r} className={`badge ${r === "Completed" ? "badge-ok" : "badge-partial"}`} style={{ marginRight: 4 }}>{r}</span>
-                          ))}
-                        </td>
-                        <td>
-                          <span className={`badge ${e.billable === false ? "badge-consultant" : "badge-ok"}`}><DollarSign size={10} style={{ verticalAlign: -1 }} /> {e.billable === false ? "Non-billable" : "Billable"}</span>
-                        </td>
-                        <td>
-                          <span className={`badge ${STATUS[e.status]?.badge || "badge-consultant"}`}>{STATUS[e.status]?.label || e.status}</span>
-                          {e.status === "rejected" && e.review_comment && (
-                            <div className="review-note">"{e.review_comment}"</div>
-                          )}
-                        </td>
-                        <td style={{ maxWidth: 200, color: "var(--dim)" }}>{e.comments}</td>
-                        <td>
-                          <div className="row-actions">
-                            {e.created_by === session.user.id && (
-                              <button className="icon-btn" onClick={() => openDuplicateEntry(e)} title="Duplicate as a new entry for today"><Copy size={14} /></button>
-                            )}
-                            <button className="icon-btn" onClick={() => openEditEntry(e)} disabled={!canEdit(e)} title={canEdit(e) ? "Edit" : "Locked — only drafts or rejected entries can be edited"}><Pencil size={14} /></button>
-                            <button className="icon-btn" onClick={() => deleteEntry(e.id)} disabled={!canEdit(e)} title={canEdit(e) ? "Delete" : "Locked — only drafts or rejected entries can be deleted"}><Trash2 size={14} /></button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {isAdmin ? renderGroupedRows() : filtered.map((e, i) => renderEntryRow(e, i))}
                   </tbody>
                 </table>
               )}
